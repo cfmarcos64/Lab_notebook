@@ -146,7 +146,7 @@ def split_reaction(smiles_str):
 # ----------------------------------------------------------------------------
 # Grupos genéricos (R1, R2…) y lectura de la salida de Ketcher
 # ----------------------------------------------------------------------------
-R_STYLES = {"R₁ (subíndice)": "sub", "R¹ (superíndice)": "sup", "R1 (texto plano)": "plain"}
+R_STYLES = {"R¹ (superíndice)": "sup", "R₁ (subíndice)": "sub", "R1 (texto plano)": "plain"}
 
 
 def format_r_label(text, style="sub"):
@@ -274,14 +274,6 @@ def parse_ketcher_output(text):
         except Exception:
             return "", {"format": "error", "fragments": 0}
 
-    # ---- Molfile (V2000 / V3000) ----
-    if "M  END" in t:
-        raw = (text or "").replace("\r\n", "\n").rstrip() + "\n"
-        mol = _mol_from_block(raw)
-        if mol is None:
-            return "", {"format": "error", "fragments": 0}
-        smis = _mol_to_smiles_list(mol)
-        return ".".join(smis), {"format": "molfile", "fragments": len(smis)}
 
     # ---- SMILES ----
     return t, {"format": "smiles", "fragments": 0}
@@ -830,54 +822,21 @@ def render_reaction_scheme_exporter():
             "Si dibujas una reacción, todos sus componentes se tratarán como moléculas independientes."
         )
 
-    with st.expander("⚙️ Opciones avanzadas del editor (grupos R1, R2…)"):
-        fmt_choice = st.radio(
-            "Formato de intercambio con Ketcher:",
-            ["SMILES (estándar)", "Molfile (conserva los grupos R1, R2…)"],
-            horizontal=True,
-            key="exp_ketcher_fmt",
-            help="Con SMILES, Ketcher no puede guardar el nombre de los grupos genéricos y salen como «*» "
-                 "(podrás nombrarlos a mano más abajo). Con Molfile se conservan R1, R2… automáticamente.",
-        )
-        st.caption(
-            "⚠️ Cambiar de formato reinicia el lienzo de Ketcher: elígelo **antes** de dibujar. "
-            "Si dibujas grupos R1, R2… en Ketcher, usa Molfile."
-        )
-    use_molfile = fmt_choice.startswith("Molfile")
-
     raw_output = ""
     try:
-        if use_molfile:
-            try:
-                raw_output = st_ketcher("", height=500, molecule_format="MOLFILE")
-            except TypeError:
-                st.warning(
-                    "Tu versión de `streamlit-ketcher` no admite el formato Molfile "
-                    "(actualiza con `pip install -U streamlit-ketcher`). Se usa SMILES."
-                )
-                use_molfile = False
-                raw_output = st_ketcher("", height=500)
-        else:
-            raw_output = st_ketcher("", height=500)
+        raw_output = st_ketcher("", height=500)
     except Exception:
         raw_output = ""
 
     reaction_smiles, parse_info = parse_ketcher_output(raw_output)
 
     if parse_info.get("format") == "error":
-        st.error("No se pudo interpretar lo que ha devuelto Ketcher. Prueba con el formato SMILES.")
+        st.error("No se pudo interpretar lo que ha devuelto Ketcher.")
         return
 
     if not reaction_smiles or not reaction_smiles.strip():
         st.info("Dibuja la estructura o reacción en el lienzo y pulsa **Apply** para previsualizar.")
         return
-
-    if use_molfile and parse_info.get("format") == "molfile" and not is_figure and parse_info.get("fragments", 0) > 1:
-        st.warning(
-            "Con el formato Molfile Ketcher no ha incluido la flecha de reacción, así que no se pueden "
-            "distinguir reactivos y productos. Para esquemas de reacción usa el formato SMILES "
-            "(y nombra los grupos R a mano más abajo), o cambia a «Figura de moléculas»."
-        )
 
     st.markdown("---")
     catalyst, solvent, temperature = "", "", ""
