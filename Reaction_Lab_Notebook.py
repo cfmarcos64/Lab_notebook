@@ -8,7 +8,8 @@ Created on Tue Oct 20 20:26:17 2026
 """
 Reaction Stoichiometry & Lab Notebook Module
 Allows drawing full chemical reactions, robust PubChem IUPAC name fetching via InChIKey,
-fully synchronized dynamic state, clean reaction schemes, and Word (.docx) export.
+fully synchronized dynamic state, clean reaction schemes with condition overlay (above/below arrow),
+Word (.docx) export, and dual file export.
 """
 
 import streamlit as st
@@ -21,9 +22,8 @@ from datetime import datetime
 # --- Dependency Verification ---
 try:
     from rdkit import Chem
-    from rdkit.Chem import AllChem, Descriptors
+    from rdkit.Chem import Descriptors
     from rdkit.Chem.rdMolDescriptors import CalcMolFormula
-    from rdkit.Chem.Draw import rdMolDraw2D
     RDKIT_AVAILABLE = True
 except ImportError:
     RDKIT_AVAILABLE = False
@@ -36,7 +36,7 @@ except ImportError:
 
 try:
     from docx import Document
-    from docx.shared import Inches, Pt, RGBColor, Cm
+    from docx.shared import Pt, RGBColor, Cm
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.enum.table import WD_TABLE_ALIGNMENT
     from docx.oxml import OxmlElement
@@ -44,6 +44,13 @@ try:
     DOCX_AVAILABLE = True
 except ImportError:
     DOCX_AVAILABLE = False
+
+# Importar el motor de composición de Reaction_Scheme_Exporter
+try:
+    from Reaction_Scheme_Exporter import make_scheme, to_png_bytes
+    SCHEME_EXPORTER_AVAILABLE = True
+except ImportError:
+    SCHEME_EXPORTER_AVAILABLE = False
 
 
 def add_page_number_to_footer(run):
@@ -82,19 +89,27 @@ def get_pubchem_iupac_by_inchikey(inchikey_str):
     return None
 
 
-def draw_reaction_scheme(rxn_smiles):
-    """Genera una imagen limpia de la reacción utilizando RDKit."""
-    try:
-        rxn = AllChem.ReactionFromSmarts(rxn_smiles, useSmiles=True)
-        if not rxn:
-            return None
-        drawer = rdMolDraw2D.MolDraw2DCairo(1000, 300)
-        drawer.drawOptions().addAtomIndices = False
-        drawer.DrawReaction(rxn)
-        drawer.FinishDrawing()
-        return drawer.GetDrawingText()
-    except Exception:
+def draw_reaction_scheme(rxn_smiles, catalyst="", solvent="", temperature=""):
+    """Genera una imagen vectorial/PIL limpia de la reacción con las condiciones sobre/bajo la flecha."""
+    if not SCHEME_EXPORTER_AVAILABLE:
         return None
+    try:
+        res = make_scheme(
+            smiles_str=rxn_smiles,
+            width_cm=16.0,
+            dpi=600,
+            fit_width=True,
+            mode="reaction",
+            solvent=solvent,
+            catalyst=catalyst,
+            temperature=temperature,
+            add_labels=False
+        )
+        if res and res.get("image"):
+            return to_png_bytes(res["image"], res["dpi"])
+    except Exception:
+        pass
+    return None
 
 
 def update_exp_key():
@@ -109,6 +124,144 @@ def update_exp_key():
             st.session_state.dyn_exp_key = "EXP-001"
     else:
         st.session_state.dyn_exp_key = "EXP-001"
+
+
+def generate_docx_document(experiment_key, user_name, solvent, catalyst, temperature, reaction_png_bytes, editable_components, solvent_row):
+    """Genera el objeto BytesIO con el documento Word listo para descarga."""
+    doc = Document()
+    
+    # Configurar Tamaño A4 y Márgenes (2,5 cm)
+    section = doc.sections[0]
+    section.page_width = Cm(21.0)
+    section.page_height = Cm(29.7)
+    section.left_margin = Cm(2.5)
+    section.right_margin = Cm(2.5)
+    section.top_margin = Cm(2.5)
+    section.bottom_margin = Cm(2.5)
+
+    printable_width = Cm(16.0)
+
+    # Encabezado
+    header = section.header
+    p_hdr = header.paragraphs[0]
+    p_hdr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    header_text = f"Libreta de laboratorio de {user_name.strip()}" if user_name.strip() else "Libreta de laboratorio"
+    run_hdr = p_hdr.add_run(header_text)
+    run_hdr.font.size = Pt(9)
+    run_hdr.font.italic = True
+    run_hdr.font.color.rgb = RGBColor(128, 128, 128)
+
+    # Pie de página
+    footer = section.footer
+    p_ftr = footer.paragraphs[0]
+    p_ftr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+    run_ftr = p_ftr.add_run()
+    run_ftr.font.size = Pt(9)
+    run_ftr.font.color.rgb = RGBColor(128, 128, 128)
+    add_page_number_to_footer(run_ftr)
+
+    # Título: Clave del experimento
+    p_title = doc.add_paragraph()
+    p_title.paragraph_format.space_before = Pt(0)
+    p_title.paragraph_format.space_after = Pt(2)
+    run_title = p_title.add_run(experiment_key)
+    run_title.bold = True
+    run_title.font.size = Pt(18)
+    run_title.font.color.rgb = RGBColor(0, 51, 102)
+    p_title.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    # Fecha
+    p_date = doc.add_paragraph()
+    p_date.paragraph_format.space_before = Pt(0)
+    p_date.paragraph_format.space_after = Pt(6)
+    current_date_str = datetime.now().strftime("%d/%m/%Y")
+    run_date = p_date.add_run(current_date_str)
+    run_date.font.size = Pt(11)
+    run_date.font.color.rgb = RGBColor(100, 100, 100)
+    p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+
+    # Esquema de Reacción con las condiciones compuestas en la imagen
+    if reaction_png_bytes:
+        p_img = doc.add_paragraph()
+        p_img.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_img.paragraph_format.space_before = Pt(4)
+        p_img.paragraph_format.space_after = Pt(8)
+        
+        image_stream = io.BytesIO(reaction_png_bytes)
+        doc.add_picture(image_stream, width=printable_width)
+
+    p_tab_title = doc.add_paragraph()
+    p_tab_title.paragraph_format.space_before = Pt(6)
+    p_tab_title.paragraph_format.space_after = Pt(4)
+    p_tab_title.add_run("Tabla Estequiométrica de Preparación:").bold = True
+
+    # Tabla
+    table = doc.add_table(rows=1, cols=8)
+    table.alignment = WD_TABLE_ALIGNMENT.CENTER
+    table.style = 'Table Grid'
+
+    hdr_cells = table.rows[0].cells
+    headers = ["Rol", "Fórmula", "Nombre", "PM (g/mol)", "Densidad", "Eq.", "mmol", "Masa/Vol"]
+    for i, header_text in enumerate(headers):
+        hdr_cells[i].text = header_text
+        p = hdr_cells[i].paragraphs[0]
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(1)
+        if p.runs:
+            p.runs[0].font.bold = True
+            p.runs[0].font.size = Pt(10)
+
+    # Filas
+    for comp in editable_components:
+        row_cells = table.add_row().cells
+        vol_str = f"{comp['Volumen (mL)']} mL" if comp['Volumen (mL)'] > 0 else f"{int(comp['Masa (mg)'])} mg"
+        row_values = [
+            str(comp["Rol"]),
+            str(comp["Fórmula"]),
+            str(comp["Nombre (Editable)"]),
+            str(comp["PM (g/mol)"]),
+            str(comp["Densidad (g/mL)"]),
+            str(comp["Equiv."]),
+            str(comp["mmol"]),
+            vol_str
+        ]
+        for i, val in enumerate(row_values):
+            row_cells[i].text = val
+            p = row_cells[i].paragraphs[0]
+            p.paragraph_format.space_before = Pt(1)
+            p.paragraph_format.space_after = Pt(1)
+            if p.runs:
+                p.runs[0].font.size = Pt(10)
+
+    # Disolvente
+    row_cells = table.add_row().cells
+    solv_values = [
+        solvent_row["Rol"],
+        solvent_row["Fórmula"],
+        solvent_row["Nombre (Editable)"],
+        solvent_row["PM (g/mol)"],
+        solvent_row["Densidad (g/mL)"],
+        solvent_row["Equiv."],
+        solvent_row["mmol"],
+        f"{solvent_row['Volumen (mL)']} mL"
+    ]
+    for i, val in enumerate(solv_values):
+        row_cells[i].text = val
+        p = row_cells[i].paragraphs[0]
+        p.paragraph_format.space_before = Pt(1)
+        p.paragraph_format.space_after = Pt(1)
+        if p.runs:
+            p.runs[0].font.size = Pt(10)
+
+    p_proc_title = doc.add_paragraph()
+    p_proc_title.paragraph_format.space_before = Pt(12)
+    p_proc_title.paragraph_format.space_after = Pt(4)
+    p_proc_title.add_run("Procedimiento y Observaciones:").bold = True
+
+    docx_buffer = io.BytesIO()
+    doc.save(docx_buffer)
+    docx_buffer.seek(0)
+    return docx_buffer.getvalue()
 
 
 def render_reaction_lab_notebook():
@@ -134,7 +287,7 @@ def render_reaction_lab_notebook():
         st.info("Dibuja la reacción en el lienzo superior y pulsa **Apply** para comenzar.")
         return
 
-    # Detección de cambio de reacción para limpiar estados anteriores en session_state
+    # Detección de cambio de reacción para limpiar estados anteriores
     if "last_reaction" not in st.session_state or st.session_state.last_reaction != reaction_smiles:
         st.session_state.last_reaction = reaction_smiles
         keys_to_delete = [k for k in st.session_state.keys() if k.startswith("dyn_")]
@@ -160,6 +313,21 @@ def render_reaction_lab_notebook():
                     mol = Chem.MolFromSmiles(p_smi.strip())
                     if mol:
                         products_list.append(mol)
+        elif ">" in reaction_smiles:
+            parts = reaction_smiles.split(">")
+            raw_reactants = parts[0].split(".")
+            raw_products = parts[-1].split(".") if len(parts) > 1 else []
+            
+            for r_smi in raw_reactants:
+                if r_smi.strip():
+                    mol = Chem.MolFromSmiles(r_smi.strip())
+                    if mol:
+                        reactants_list.append(mol)
+            for p_smi in raw_products:
+                if p_smi.strip():
+                    mol = Chem.MolFromSmiles(p_smi.strip())
+                    if mol:
+                        products_list.append(mol)
         else:
             mol = Chem.MolFromSmiles(reaction_smiles)
             if mol:
@@ -172,7 +340,6 @@ def render_reaction_lab_notebook():
         st.warning("No se han detectado moléculas válidas.")
         return
 
-    # Inicializar session_state para clave de experimento si no existe
     if "dyn_exp_key" not in st.session_state:
         st.session_state.dyn_exp_key = "EXP-001"
 
@@ -200,20 +367,26 @@ def render_reaction_lab_notebook():
     with st.container(border=True):
         col_c1, col_c2, col_c3 = st.columns(3)
         with col_c1:
-            solvent = st.text_input("Disolvente principal:", value="Etanol", key="dyn_solvent")
+            catalyst = st.text_input("Catalizador / Reactivos (sobre la flecha):", value="N/A", key="dyn_catalyst")
         with col_c2:
-            catalyst = st.text_input("Catalizador / Reactivos:", value="N/A", key="dyn_catalyst")
+            solvent = st.text_input("Disolvente principal (bajo la flecha):", value="Etanol", key="dyn_solvent")
         with col_c3:
-            temperature = st.text_input("Temperatura / Tiempo:", value="Reflujo, 2 h", key="dyn_temp")
+            temperature = st.text_input("Temperatura / Tiempo (bajo la flecha):", value="Reflujo, 2 h", key="dyn_temp")
 
-    # Generar imagen limpia de la reacción
-    reaction_png_bytes = draw_reaction_scheme(reaction_smiles)
+    # Generar imagen mejorada de la reacción
+    reaction_png_bytes = draw_reaction_scheme(
+        rxn_smiles=reaction_smiles,
+        catalyst=catalyst,
+        solvent=solvent,
+        temperature=temperature
+    )
+    
     if reaction_png_bytes:
         st.markdown("#### 🖼️ Previsualización del Esquema de Reacción")
-        caption_text = f"Experimento: {experiment_key} | Condiciones: {solvent} | {catalyst} | {temperature}"
+        caption_text = f"Experimento: {experiment_key}"
         if user_name.strip():
             caption_text = f"Usuario: {user_name} | " + caption_text
-        st.image(reaction_png_bytes, caption=caption_text, width=650)
+        st.image(reaction_png_bytes, caption=caption_text, use_container_width=True)
 
     # Procesar componentes consultando PubChem mediante InChIKey
     components_data = []
@@ -291,7 +464,6 @@ def render_reaction_lab_notebook():
             mg = mmol * comp["mw"]
             ml = 0.0 if is_solid else ((mg / (custom_dens * 1000)) if custom_dens > 0 else 0.0)
         else:
-            # Producto (no calcula volumen)
             col_name, col_dens, col_eq = st.columns([2, 1, 1])
             with col_name:
                 custom_name = st.text_input(f"Nombre ({comp['formula']})", value=comp["name"], key=f"dyn_name_{idx}")
@@ -318,14 +490,13 @@ def render_reaction_lab_notebook():
         table_rows.append(row_dict)
         editable_components.append(row_dict)
 
-    # --- Campo para el Volumen del Disolvente ---
+    # Disolvente
     st.markdown("#### 🧪 Disolvente de Reacción")
     solvent_label = solvent.strip() if solvent.strip() else "Disolvente"
     col_solv_vol, col_solv_dummy = st.columns([1, 2])
     with col_solv_vol:
         solvent_vol = st.number_input(f"Volumen de {solvent_label} (mL):", min_value=0.0, value=10.0, step=1.0, key="dyn_solvent_vol")
 
-    # Fila del disolvente para la tabla y el informe
     solvent_row = {
         "Rol": "Disolvente",
         "Fórmula": "-",
@@ -342,165 +513,57 @@ def render_reaction_lab_notebook():
     df_lab = pd.DataFrame(table_rows)
     st.dataframe(df_lab, use_container_width=True)
 
-    # --- Generación de Documento Word (.docx) ---
     if not DOCX_AVAILABLE:
         st.warning("La librería `python-docx` no está instalada.")
         return
 
     st.markdown("---")
-    st.markdown("### 📄 Exportar Informe a Word")
+    st.markdown("### 📄 Exportar Informe a Word y Estructura")
 
-    if st.button("📥 Generar y Descargar Informe Word (.docx)", type="primary", use_container_width=True):
-        doc = Document()
-        
-        # Configurar Tamaño A4 y Márgenes (2,5 cm)
-        section = doc.sections[0]
-        section.page_width = Cm(21.0)
-        section.page_height = Cm(29.7)
-        section.left_margin = Cm(2.5)
-        section.right_margin = Cm(2.5)
-        section.top_margin = Cm(2.5)
-        section.bottom_margin = Cm(2.5)
+    save_editable_format = st.checkbox(
+        "Mostrar botón para descargar la estructura química editable (formato Ketcher/SMILES)", 
+        value=True, 
+        key="dyn_save_editable"
+    )
 
-        # Ancho útil imprimible: 21 cm - 2.5 cm - 2.5 cm = 16.0 cm
-        printable_width = Cm(16.0)
+    docx_bytes = generate_docx_document(
+        experiment_key=experiment_key,
+        user_name=user_name,
+        solvent=solvent,
+        catalyst=catalyst,
+        temperature=temperature,
+        reaction_png_bytes=reaction_png_bytes,
+        editable_components=editable_components,
+        solvent_row=solvent_row
+    )
 
-        # Configurar Encabezado
-        header = section.header
-        p_hdr = header.paragraphs[0]
-        p_hdr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        header_text = f"Libreta de laboratorio de {user_name.strip()}" if user_name.strip() else "Libreta de laboratorio"
-        run_hdr = p_hdr.add_run(header_text)
-        run_hdr.font.size = Pt(9)
-        run_hdr.font.italic = True
-        run_hdr.font.color.rgb = RGBColor(128, 128, 128)
-
-        # Configurar Pie de página (Número de página abajo a la derecha)
-        footer = section.footer
-        p_ftr = footer.paragraphs[0]
-        p_ftr.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-        run_ftr = p_ftr.add_run()
-        run_ftr.font.size = Pt(9)
-        run_ftr.font.color.rgb = RGBColor(128, 128, 128)
-        add_page_number_to_footer(run_ftr)
-
-        # Título principal del documento: Clave del experimento
-        p_title = doc.add_paragraph()
-        p_title.paragraph_format.space_before = Pt(0)
-        p_title.paragraph_format.space_after = Pt(2)
-        run_title = p_title.add_run(experiment_key)
-        run_title.bold = True
-        run_title.font.size = Pt(18)
-        run_title.font.color.rgb = RGBColor(0, 51, 102)
-        p_title.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-        # Fecha del día debajo de la clave
-        p_date = doc.add_paragraph()
-        p_date.paragraph_format.space_before = Pt(0)
-        p_date.paragraph_format.space_after = Pt(6)
-        current_date_str = datetime.now().strftime("%d/%m/%Y")
-        run_date = p_date.add_run(current_date_str)
-        run_date.font.size = Pt(11)
-        run_date.font.color.rgb = RGBColor(100, 100, 100)
-        p_date.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-
-        # Esquema de Reacción ocupando todo el ancho de la página (16 cm) y con espacios reducidos
-        if reaction_png_bytes:
-            p_img = doc.add_paragraph()
-            p_img.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p_img.paragraph_format.space_before = Pt(2)
-            p_img.paragraph_format.space_after = Pt(2)
-            
-            image_stream = io.BytesIO(reaction_png_bytes)
-            doc.add_picture(image_stream, width=printable_width)
-            
-            p_cap = doc.add_paragraph(f"Condiciones: {solvent} | {catalyst} | {temperature}")
-            p_cap.alignment = WD_ALIGN_PARAGRAPH.CENTER
-            p_cap.paragraph_format.space_before = Pt(0)
-            p_cap.paragraph_format.space_after = Pt(8)
-            p_cap.runs[0].font.italic = True
-            p_cap.runs[0].font.size = Pt(10)
-
-        p_tab_title = doc.add_paragraph()
-        p_tab_title.paragraph_format.space_before = Pt(6)
-        p_tab_title.paragraph_format.space_after = Pt(4)
-        p_tab_title.add_run("Tabla Estequiométrica de Preparación:").bold = True
-
-        # Tabla con 8 columnas incluyendo Densidad
-        table = doc.add_table(rows=1, cols=8)
-        table.alignment = WD_TABLE_ALIGNMENT.CENTER
-        table.style = 'Table Grid'
-
-        hdr_cells = table.rows[0].cells
-        headers = ["Rol", "Fórmula", "Nombre", "PM (g/mol)", "Densidad", "Eq.", "mmol", "Masa/Vol"]
-        for i, header_text in enumerate(headers):
-            hdr_cells[i].text = header_text
-            p = hdr_cells[i].paragraphs[0]
-            p.paragraph_format.space_before = Pt(1)
-            p.paragraph_format.space_after = Pt(1)
-            if p.runs:
-                p.runs[0].font.bold = True
-                p.runs[0].font.size = Pt(10)
-
-        # Añadir reactivos y productos
-        for comp in editable_components:
-            row_cells = table.add_row().cells
-            vol_str = f"{comp['Volumen (mL)']} mL" if comp['Volumen (mL)'] > 0 else f"{int(comp['Masa (mg)'])} mg"
-            row_values = [
-                str(comp["Rol"]),
-                str(comp["Fórmula"]),
-                str(comp["Nombre (Editable)"]),
-                str(comp["PM (g/mol)"]),
-                str(comp["Densidad (g/mL)"]),
-                str(comp["Equiv."]),
-                str(comp["mmol"]),
-                vol_str
-            ]
-            for i, val in enumerate(row_values):
-                row_cells[i].text = val
-                p = row_cells[i].paragraphs[0]
-                p.paragraph_format.space_before = Pt(1)
-                p.paragraph_format.space_after = Pt(1)
-                if p.runs:
-                    p.runs[0].font.size = Pt(10)
-
-        # Añadir fila del disolvente
-        row_cells = table.add_row().cells
-        solv_values = [
-            solvent_row["Rol"],
-            solvent_row["Fórmula"],
-            solvent_row["Nombre (Editable)"],
-            solvent_row["PM (g/mol)"],
-            solvent_row["Densidad (g/mL)"],
-            solvent_row["Equiv."],
-            solvent_row["mmol"],
-            f"{solvent_row['Volumen (mL)']} mL"
-        ]
-        for i, val in enumerate(solv_values):
-            row_cells[i].text = val
-            p = row_cells[i].paragraphs[0]
-            p.paragraph_format.space_before = Pt(1)
-            p.paragraph_format.space_after = Pt(1)
-            if p.runs:
-                p.runs[0].font.size = Pt(10)
-
-        p_proc_title = doc.add_paragraph()
-        p_proc_title.paragraph_format.space_before = Pt(12)
-        p_proc_title.paragraph_format.space_after = Pt(4)
-        p_proc_title.add_run("Procedimiento y Observaciones:").bold = True
-
-        docx_buffer = io.BytesIO()
-        doc.save(docx_buffer)
-        docx_buffer.seek(0)
-
-        st.success("¡Informe generado con éxito!")
+    if save_editable_format:
+        col_btn1, col_btn2 = st.columns(2)
+        with col_btn1:
+            st.download_button(
+                label="📄 Descargar Documento Word (.docx)",
+                data=docx_bytes,
+                file_name=f"Libreta_Laboratorio_{experiment_key}.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                type="primary",
+                use_container_width=True
+            )
+        with col_btn2:
+            st.download_button(
+                label="🧪 Descargar Estructura Editable (.smi)",
+                data=reaction_smiles.encode("utf-8"),
+                file_name=f"Libreta_Laboratorio_{experiment_key}.smi",
+                mime="text/plain",
+                type="secondary",
+                use_container_width=True,
+                help="Guarda la cadena de reacción. Puedes volver a cargarla en Ketcher cuando lo necesites."
+            )
+    else:
         st.download_button(
-            label="💾 Descargar Documento Word (.docx)",
-            data=docx_buffer,
+            label="📄 Descargar Documento Word (.docx)",
+            data=docx_bytes,
             file_name=f"Libreta_Laboratorio_{experiment_key}.docx",
-            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            type="primary",
+            use_container_width=True
         )
-
-# Para uso standalone:
-# if __name__ == "__main__":
-    # render_reaction_lab_notebook()

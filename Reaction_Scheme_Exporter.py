@@ -276,8 +276,6 @@ def parse_ketcher_output(text):
 
     # ---- Molfile (V2000 / V3000) ----
     if "M  END" in t:
-        # OJO: no se puede hacer strip() del principio; la primera línea (título) puede estar en
-        # blanco y es significativa en el formato molfile.
         raw = (text or "").replace("\r\n", "\n").rstrip() + "\n"
         mol = _mol_from_block(raw)
         if mol is None:
@@ -294,10 +292,6 @@ def render_mol(smiles_str, bond_px=40.0, line_px=2, font_px=None, rlabels=None, 
     Renderiza una molécula con fondo transparente, con la longitud de enlace EXACTA en píxeles
     (bond_px), el grosor de línea line_px y el tamaño de letra de átomos font_px (ambos en px).
     Se recorta al bounding box real. Devuelve una imagen PIL RGBA o None si falla.
-
-    Nota: con lienzo autoajustable (-1, -1) RDKit ignora fixedBondLength, por eso se calcula
-    el tamaño del lienzo a partir de las coordenadas 2D. Además fixedBondLength no son píxeles
-    sino píxeles por unidad de coordenada, de ahí la normalización con la longitud media de enlace.
     """
     smiles_str = (smiles_str or "").strip()
     if not smiles_str:
@@ -332,7 +326,7 @@ def render_mol(smiles_str, bond_px=40.0, line_px=2, font_px=None, rlabels=None, 
 
         xs = [p[0] for p in pts]
         ys = [p[1] for p in pts]
-        margin_units = 2.5  # holgura para etiquetas de heteroátomos
+        margin_units = 2.5
         W = int((max(xs) - min(xs) + 2 * margin_units) * k) + 20
         H = int((max(ys) - min(ys) + 2 * margin_units) * k) + 20
 
@@ -352,7 +346,7 @@ def render_mol(smiles_str, bond_px=40.0, line_px=2, font_px=None, rlabels=None, 
         drawer.FinishDrawing()
 
         img = Image.open(io.BytesIO(drawer.GetDrawingText())).convert("RGBA")
-        bbox = img.split()[3].getbbox()  # recorte según canal alfa
+        bbox = img.split()[3].getbbox()
         if not bbox:
             return None
         img = img.crop(bbox)
@@ -382,24 +376,17 @@ def build_scheme_image(
     rlabels=None,
     r_style="sub",
 ):
-    """
-    labels: None -> numeración automática (reactivos y luego productos).
-            lista de str -> etiqueta personalizada por compuesto, en el orden
-            reactivos + productos (cadena vacía = sin etiqueta).
-    Devuelve (imagen_PIL_RGB, [(etiqueta, smiles), ...], [smiles_no_dibujados]).
-    """
     has_arrow, reactants_smi, agents_smi, products_smi = split_reaction(smiles_str)
     if not (reactants_smi or products_smi):
         return None, [], []
 
-    bl = mm_to_px(bond_mm, dpi)                 # longitud de enlace en px
-    lw = max(1, int(round(pt_to_px(line_pt, dpi))))  # grosor de línea en px
-    font_px = pt_to_px(font_pt, dpi)            # tamaño de texto en px
+    bl = mm_to_px(bond_mm, dpi)
+    lw = max(1, int(round(pt_to_px(line_pt, dpi))))
+    font_px = pt_to_px(font_pt, dpi)
 
     skipped = []
 
-    # --- Render de cada compuesto conservando su índice global original ---
-    reactants, products = [], []   # (gidx, smiles, img)
+    reactants, products = [], []
     gidx = 0
     for sm in reactants_smi:
         img = render_mol(sm, bl, lw, font_px, rlabels, r_style)
@@ -427,7 +414,6 @@ def build_scheme_image(
     if not reactants and not products:
         return None, [], skipped
 
-    # --- Etiquetas por compuesto ---
     label_for = {}
     auto_n = int(start_number)
     for g, sm, img in reactants + products:
@@ -440,7 +426,6 @@ def build_scheme_image(
             lbl = (labels[g] if g < len(labels) else "").strip()
         label_for[g] = lbl
 
-    # --- Constantes de layout (proporcionales a la longitud de enlace) ---
     PAD = int(round(0.6 * bl))
     ARROW_MARGIN = int(round(0.45 * bl))
     GAP_NUM = int(round(0.45 * bl))
@@ -457,8 +442,7 @@ def build_scheme_image(
     plus_glyph_w = text_size(measure, "+", font_plus)[0]
     PLUS_W = plus_glyph_w + int(round(0.9 * bl))
 
-    # --- Condiciones ---
-    wrap_w = int(round(5.0 * bl))  # ancho máximo de cada línea de condiciones
+    wrap_w = int(round(5.0 * bl))
 
     def cond_lines(texts):
         out = []
@@ -486,9 +470,8 @@ def build_scheme_image(
         agents_row_w + int(round(0.6 * bl)),
     )
 
-    # --- Layout horizontal (cada compuesto ocupa un "slot" al menos tan ancho como su etiqueta) ---
-    placements = []      # (img, x)
-    label_items = []     # (cx, etiqueta, smiles)
+    placements = []
+    label_items = []
     plus_centers = []
 
     def place_group(group, x):
@@ -517,7 +500,6 @@ def build_scheme_image(
     x = place_group(products, x)
     total_w = int(round(x + PAD))
 
-    # --- Layout vertical ---
     mol_h_max = max(img.height for _, _, img in reactants + products)
     half = mol_h_max / 2
 
@@ -541,17 +523,14 @@ def build_scheme_image(
     canvas = Image.new("RGBA", (total_w, total_h), (255, 255, 255, 255))
     draw = ImageDraw.Draw(canvas)
 
-    # --- Moléculas ---
     for img, px in placements:
         py = int(round(axis_y - img.height / 2))
         canvas.paste(img, (int(round(px)), py), img)
 
-    # --- Signos + ---
     plus_h = text_size(draw, "+", font_plus)[1]
     for cx in plus_centers:
         draw_text_centered(draw, cx, axis_y - plus_h / 2, "+", font_plus)
 
-    # --- Flecha y condiciones ---
     if has_arrow:
         draw.line([(arrow_x0, axis_y), (arrow_x1 - head, axis_y)], fill=(0, 0, 0, 255), width=lw)
         draw.polygon(
@@ -580,7 +559,6 @@ def build_scheme_image(
             draw_text_centered(draw, arrow_cx, cur, line, font_cond)
             cur += lh
 
-    # --- Etiquetas: línea común bajo la estructura más alta, cada una centrada ---
     labeled = []
     if has_labels:
         num_y = axis_y + half + GAP_NUM
@@ -607,14 +585,6 @@ def build_figure_image(
     rlabels=None,
     r_style="sub",
 ):
-    """
-    Figura de moléculas: cuadrícula alineada, sin signos + ni flecha ni condiciones.
-    Todos los componentes del SMILES (reactivos, agentes y productos, si se dibujó una
-    reacción) se tratan como moléculas independientes, en ese orden.
-
-    cols: moléculas por fila. None -> tantas como quepan en target_px (px).
-    Devuelve (imagen_PIL_RGB, [(etiqueta, smiles), ...], [smiles_no_dibujados], info).
-    """
     _, r_smi, a_smi, p_smi = split_reaction(smiles_str)
     mols_smi = r_smi + a_smi + p_smi
     if not mols_smi:
@@ -625,7 +595,7 @@ def build_figure_image(
     font_px = pt_to_px(font_pt, dpi)
 
     skipped = []
-    items = []  # (gidx, smiles, img)
+    items = []
     for g, sm in enumerate(mols_smi):
         img = render_mol(sm, bl, lw, font_px, rlabels, r_style)
         if img is None:
@@ -635,7 +605,6 @@ def build_figure_image(
     if not items:
         return None, [], skipped, {}
 
-    # --- Etiquetas ---
     label_for = {}
     auto_n = int(start_number)
     for g, sm, img in items:
@@ -657,7 +626,6 @@ def build_figure_image(
     font_num = get_font(font_px, bold=True)
     measure = ImageDraw.Draw(Image.new("RGB", (1, 1)))
 
-    # --- Anchura de cada molécula (incluye su etiqueta) y anchos de columna individuales ---
     slots = []
     for g, sm, img in items:
         lbl = label_for[g]
@@ -667,7 +635,6 @@ def build_figure_image(
     n = len(items)
 
     def col_widths(c):
-        # la molécula i va a la columna i % c; cada columna tiene el ancho de su molécula más ancha
         return [max(slots[j::c]) for j in range(c)]
 
     def grid_width(c):
@@ -677,7 +644,7 @@ def build_figure_image(
         cols = n
         if target_px:
             cols = 1
-            for c in range(n, 0, -1):  # el mayor número de columnas que quepa
+            for c in range(n, 0, -1):
                 if grid_width(c) <= target_px:
                     cols = c
                     break
@@ -692,7 +659,6 @@ def build_figure_image(
 
     num_h_full = text_size(measure, "Ay(1)|", font_num)[1]
 
-    # --- Altura de cada fila: molécula más alta + zona de etiquetas (si alguna la tiene) ---
     row_groups = [items[i * cols:(i + 1) * cols] for i in range(rows)]
     row_mol_h, row_has_lbl, row_h = [], [], []
     for grp in row_groups:
@@ -734,14 +700,6 @@ def make_scheme(
     cols=None,
     **kwargs,
 ):
-    """
-    Genera la imagen con el ancho final pedido (mode: "reaction" o "figure").
-      - fit_width=True : se busca la longitud de enlace para que el contenido llene width_cm.
-      - fit_width=False: se usa bond_mm; el ancho es max(width_cm, ancho del contenido), es decir,
-                         "al menos" width_cm (si es más estrecho se centra con margen).
-    En modo figura, `cols` fija las moléculas por fila (None = automático).
-    Devuelve un dict con la imagen y los datos de tamaño, o None.
-    """
     target_px = cm_to_px(width_cm, dpi)
 
     if mode == "figure":
@@ -749,8 +707,6 @@ def make_scheme(
             kwargs.pop(k, None)
         fig_cols = cols
         if fit_width and cols is None:
-            # Columnas automáticas: se deciden con un enlace de referencia (5 mm) y luego
-            # se ajusta el tamaño para que esas columnas llenen el ancho.
             ref = build_figure_image(
                 smiles_str, bond_mm=5.0, dpi=dpi, cols=None, target_px=target_px, **kwargs
             )
@@ -786,9 +742,6 @@ def make_scheme(
             b2 = b1 + (target_px - w1) / slope if slope > 0 else b1 * target_px / w1
             b0, w0 = b1, w1
             b1 = min(12.0, max(1.0, b2))
-        # Mejor candidato: el más cercano al ancho pedido si está dentro de tolerancia (un
-        # pequeño exceso se corrige con un reescalado mínimo); si no, el más ancho que quepa;
-        # y si ninguno cabe, el más estrecho.
         close = [t for t in tried if abs(t[0].width - target_px) <= tol]
         fitting = [t for t in tried if t[0].width <= target_px]
         if close:
@@ -806,13 +759,13 @@ def make_scheme(
 
     exceeded = False
     if img.width > target_px:
-        if fit_width:  # pequeño desajuste residual -> reescalado mínimo
+        if fit_width:
             ratio = target_px / img.width
             img = img.resize((target_px, max(1, int(round(img.height * ratio)))), RESAMPLE)
             b_eff *= ratio
         else:
-            exceeded = True  # se exporta más ancho de lo pedido (nunca se encoge)
-    elif img.width < target_px:  # centrar con márgenes blancos hasta el ancho exacto
+            exceeded = True
+    elif img.width < target_px:
         padded = Image.new("RGB", (target_px, img.height), (255, 255, 255))
         padded.paste(img, ((target_px - img.width) // 2, 0))
         img = padded
@@ -840,7 +793,6 @@ def to_png_bytes(img, dpi):
 # Interfaz Streamlit
 # ----------------------------------------------------------------------------
 def _thumbnail(smiles_str, rlabels=None, r_style="sub"):
-    """Miniatura sobre fondo blanco para identificar cada compuesto en el formulario."""
     img = render_mol(smiles_str, bond_px=22, line_px=1, font_px=11, rlabels=rlabels, r_style=r_style)
     if img is None:
         return None
@@ -959,7 +911,7 @@ def render_reaction_scheme_exporter():
     rxn_hash = hashlib.md5(reaction_smiles.strip().encode("utf-8")).hexdigest()[:8]
     rlabels = {}
     r_style = "sub"
-    free_groups = []   # (tipo, n, smiles, n_asteriscos_sin_nombre)
+    free_groups = []
     any_generic = False
     seen_smiles = set()
     for kind, k, sm in components:
@@ -1023,7 +975,6 @@ def render_reaction_scheme_exporter():
         compounds = [("Reactivo", i + 1, sm) for i, sm in enumerate(reactants_smi)] + [
             ("Producto", i + 1, sm) for i, sm in enumerate(products_smi)
         ]
-    # Las claves dependen de la reacción dibujada: si cambia, las etiquetas se reinician
     type_tag = "fig" if is_figure else "rxn"
 
     labels = None
@@ -1144,6 +1095,12 @@ def render_reaction_scheme_exporter():
         "Nombre del archivo (sin extensión):", value=default_name, key=f"exp_filename_{type_tag}"
     )
 
+    save_editable_format = st.checkbox(
+        "Mostrar botón para descargar la estructura química editable (formato Ketcher/SMILES)", 
+        value=True, 
+        key="exp_save_editable"
+    )
+
     try:
         result = make_scheme(
             reaction_smiles,
@@ -1211,18 +1168,43 @@ def render_reaction_scheme_exporter():
                     st.markdown(f"**{lbl}** — `{sm}`")
 
         clean_file_name = file_name_input.strip() or default_name
-        full_file_name = (
+        full_png_name = (
             clean_file_name if clean_file_name.lower().endswith(".png") else f"{clean_file_name}.png"
         )
-
-        st.download_button(
-            label="💾 Descargar Imagen PNG",
-            data=img_bytes,
-            file_name=full_file_name,
-            mime="image/png",
-            type="primary",
-            use_container_width=True,
+        full_smi_name = (
+            clean_file_name if clean_file_name.lower().endswith(".smi") else f"{clean_file_name}.smi"
         )
+
+        if save_editable_format:
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                st.download_button(
+                    label="💾 Descargar Imagen PNG",
+                    data=img_bytes,
+                    file_name=full_png_name,
+                    mime="image/png",
+                    type="primary",
+                    use_container_width=True,
+                )
+            with col_btn2:
+                st.download_button(
+                    label="🧪 Descargar Estructura Editable (.smi)",
+                    data=reaction_smiles.encode("utf-8"),
+                    file_name=full_smi_name,
+                    mime="text/plain",
+                    type="secondary",
+                    use_container_width=True,
+                    help="Guarda la cadena de la reacción/molécula. Puedes volver a importarla para editarla en el futuro."
+                )
+        else:
+            st.download_button(
+                label="💾 Descargar Imagen PNG",
+                data=img_bytes,
+                file_name=full_png_name,
+                mime="image/png",
+                type="primary",
+                use_container_width=True,
+            )
     elif result is None:
         st.error("No se pudo generar la imagen. Verifica la estructura dibujada.")
 
