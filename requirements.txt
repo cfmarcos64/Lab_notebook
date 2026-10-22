@@ -1,0 +1,6 @@
+streamlit>=1.31.0
+rdkit>=2023.09.1
+pandas>=2.0
+streamlit-ketcher
+python-docx
+pillow>=9.0            # PIL for image manipulation
