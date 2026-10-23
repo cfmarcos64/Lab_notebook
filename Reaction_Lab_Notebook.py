@@ -161,7 +161,7 @@ def generate_docx_document(experiment_key, user_name, solvent, catalyst, tempera
     add_page_number_to_footer(run_ftr)
 
     # Título: Clave del experimento
-    p_title = doc.add_paragraph()
+    p_title = doc.add_paragraph(style='Heading 2')
     p_title.paragraph_format.space_before = Pt(0)
     p_title.paragraph_format.space_after = Pt(2)
     run_title = p_title.add_run(experiment_key)
@@ -201,7 +201,7 @@ def generate_docx_document(experiment_key, user_name, solvent, catalyst, tempera
     table.style = 'Table Grid'
 
     hdr_cells = table.rows[0].cells
-    headers = ["Rol", "Fórmula", "Nombre", "PM (g/mol)", "Densidad", "Eq.", "mmol", "Masa/Vol"]
+    headers = ["Rol", "Fórmula", "Nombre", "PM (g/mol)", "Densidad (g/mL)", "Eq.", "mmol", "Masa/Vol"]
     for i, header_text in enumerate(headers):
         hdr_cells[i].text = header_text
         p = hdr_cells[i].paragraphs[0]
@@ -209,7 +209,7 @@ def generate_docx_document(experiment_key, user_name, solvent, catalyst, tempera
         p.paragraph_format.space_after = Pt(1)
         if p.runs:
             p.runs[0].font.bold = True
-            p.runs[0].font.size = Pt(10)
+            p.runs[0].font.size = Pt(9)
 
     # Filas
     for comp in editable_components:
@@ -231,7 +231,7 @@ def generate_docx_document(experiment_key, user_name, solvent, catalyst, tempera
             p.paragraph_format.space_before = Pt(1)
             p.paragraph_format.space_after = Pt(1)
             if p.runs:
-                p.runs[0].font.size = Pt(10)
+                p.runs[0].font.size = Pt(9)
 
     # Disolvente
     row_cells = table.add_row().cells
@@ -251,12 +251,16 @@ def generate_docx_document(experiment_key, user_name, solvent, catalyst, tempera
         p.paragraph_format.space_before = Pt(1)
         p.paragraph_format.space_after = Pt(1)
         if p.runs:
-            p.runs[0].font.size = Pt(10)
+            p.runs[0].font.size = Pt(9)
 
     p_proc_title = doc.add_paragraph()
     p_proc_title.paragraph_format.space_before = Pt(12)
     p_proc_title.paragraph_format.space_after = Pt(4)
     p_proc_title.add_run("Procedimiento y Observaciones:").bold = True
+    
+    p_tab_title = doc.add_paragraph()
+    p_tab_title.paragraph_format.space_before = Pt(6)
+    p_tab_title.paragraph_format.space_after = Pt(4)
 
     docx_buffer = io.BytesIO()
     doc.save(docx_buffer)
@@ -287,12 +291,21 @@ def render_reaction_lab_notebook():
         st.info("Dibuja la reacción en el lienzo superior y pulsa **Apply** para comenzar.")
         return
 
-    # Detección de cambio de reacción para limpiar estados anteriores
-    if "last_reaction" not in st.session_state or st.session_state.last_reaction != reaction_smiles:
+    # --- CONTROL DE VERSIÓN Y RECALCULO FORZADO DE LA TABLA ---
+    if "last_reaction" not in st.session_state:
         st.session_state.last_reaction = reaction_smiles
+        st.session_state.rxn_version = 0
+
+    if st.session_state.last_reaction != reaction_smiles:
+        st.session_state.last_reaction = reaction_smiles
+        st.session_state.rxn_version += 1  # Incrementamos la versión para invalidar las claves de los widgets
+        
+        # Limpiar estados dinámicos anteriores
         keys_to_delete = [k for k in st.session_state.keys() if k.startswith("dyn_")]
         for k in keys_to_delete:
             del st.session_state[k]
+
+    version_suffix = f"_v{st.session_state.rxn_version}"
 
     reactants_list = []
     products_list = []
@@ -438,10 +451,10 @@ def render_reaction_lab_notebook():
     col_ref1, col_ref2 = st.columns(2)
     with col_ref1:
         ref_options = [f"{c['formula']} - {c['name'][:35]}" for c in components_data if c["role"] == "Reactivo"]
-        selected_ref_label = st.selectbox("Reactivo de Referencia (Limitante):", ref_options, key="dyn_ref_select")
+        selected_ref_label = st.selectbox("Reactivo de Referencia (Limitante):", ref_options, key=f"dyn_ref_select{version_suffix}")
         selected_ref_formula = selected_ref_label.split(" - ")[0] if selected_ref_label else ""
     with col_ref2:
-        ref_mmol = st.number_input("Milimoles (mmol) de Referencia:", min_value=0.01, value=10.0, step=1.0, key="dyn_ref_mmol")
+        ref_mmol = st.number_input("Milimoles (mmol) de Referencia:", min_value=0.01, value=10.0, step=1.0, key=f"dyn_ref_mmol{version_suffix}")
 
     table_rows = []
     editable_components = []
@@ -449,16 +462,19 @@ def render_reaction_lab_notebook():
     for idx, comp in enumerate(components_data):
         is_ref = comp["role"] == "Reactivo" and comp["formula"] == selected_ref_formula
         
+        # Incorporamos el sufijo de versión en cada clave (key) para forzar la recreación del widget
+        widget_key_suffix = f"{version_suffix}_{idx}"
+        
         if comp["role"] == "Reactivo":
             col_name, col_solid, col_dens, col_eq = st.columns([2, 1, 1, 1])
             with col_name:
-                custom_name = st.text_input(f"Nombre ({comp['formula']})", value=comp["name"], key=f"dyn_name_{idx}")
+                custom_name = st.text_input(f"Nombre ({comp['formula']})", value=comp["name"], key=f"dyn_name{widget_key_suffix}")
             with col_solid:
-                is_solid = st.checkbox("Sólido", value=False, key=f"dyn_solid_{idx}")
+                is_solid = st.checkbox("Sólido", value=False, key=f"dyn_solid{widget_key_suffix}")
             with col_dens:
-                custom_dens = st.number_input("Dens. (g/mL)", value=float(comp["density"]), format="%.3f", step=0.001, key=f"dyn_dens_{idx}")
+                custom_dens = st.number_input("Dens. (g/mL)", value=float(comp["density"]), format="%.3f", step=0.001, key=f"dyn_dens{widget_key_suffix}")
             with col_eq:
-                eq = 1.0 if is_ref else st.number_input(f"Eq. {comp['formula']}", value=1.0, step=0.1, key=f"dyn_eq_{idx}")
+                eq = 1.0 if is_ref else st.number_input(f"Eq. {comp['formula']}", value=1.0, step=0.1, key=f"dyn_eq{widget_key_suffix}")
                 mmol = ref_mmol * eq
             
             mg = mmol * comp["mw"]
@@ -466,9 +482,9 @@ def render_reaction_lab_notebook():
         else:
             col_name, col_dens, col_eq = st.columns([2, 1, 1])
             with col_name:
-                custom_name = st.text_input(f"Nombre ({comp['formula']})", value=comp["name"], key=f"dyn_name_{idx}")
+                custom_name = st.text_input(f"Nombre ({comp['formula']})", value=comp["name"], key=f"dyn_name{widget_key_suffix}")
             with col_dens:
-                custom_dens = st.number_input("Dens. (g/mL)", value=float(comp["density"]), format="%.3f", step=0.001, key=f"dyn_dens_{idx}")
+                custom_dens = st.number_input("Dens. (g/mL)", value=float(comp["density"]), format="%.3f", step=0.001, key=f"dyn_dens{widget_key_suffix}")
             with col_eq:
                 eq = 1.0
                 mmol = ref_mmol
@@ -495,7 +511,7 @@ def render_reaction_lab_notebook():
     solvent_label = solvent.strip() if solvent.strip() else "Disolvente"
     col_solv_vol, col_solv_dummy = st.columns([1, 2])
     with col_solv_vol:
-        solvent_vol = st.number_input(f"Volumen de {solvent_label} (mL):", min_value=0.0, value=10.0, step=1.0, key="dyn_solvent_vol")
+        solvent_vol = st.number_input(f"Volumen de {solvent_label} (mL):", min_value=0.0, value=10.0, step=1.0, key=f"dyn_solvent_vol{version_suffix}")
 
     solvent_row = {
         "Rol": "Disolvente",
@@ -523,7 +539,7 @@ def render_reaction_lab_notebook():
     save_editable_format = st.checkbox(
         "Mostrar botón para descargar la estructura química editable (formato Ketcher/SMILES)", 
         value=True, 
-        key="dyn_save_editable"
+        key=f"dyn_save_editable{version_suffix}"
     )
 
     docx_bytes = generate_docx_document(
